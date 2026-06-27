@@ -1,6 +1,6 @@
 # BGE M3 Zeabur CPU 部署
 
-这是一个面向 Zeabur + Docker Compose 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，使用 `BAAI/bge-reranker-base` 提供 rerank 服务。
+这是一个面向 Zeabur + Docker 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，使用 `BAAI/bge-reranker-base` 提供 rerank 服务，并通过 Nginx 暴露统一鉴权入口。
 
 ## 适用资源
 
@@ -12,16 +12,19 @@
 
 默认资源分配：
 
-- embedding：6 核 / 8 GB
-- rerank：4 核 / 6 GB
+- 整个容器：10 核 / 14 GB
+- embedding：6 个推理线程
+- rerank：4 个推理线程
 - 预留：约 2 核 / 2 GB 给系统、Docker、Zeabur 代理和突发波动
 
 ## 服务说明
 
-| 服务 | 默认模型 | 端口 | 用途 |
+| 服务 | 默认模型 | 内部端口 | 公网路径 | 用途 |
 | --- | --- | --- | --- |
-| embedding | `BAAI/bge-m3` | `7997` | 文本向量化 |
-| rerank | `BAAI/bge-reranker-base` | `7998` | 检索结果重排 |
+| embedding | `BAAI/bge-m3` | `7997` | `/embedding/` | 文本向量化 |
+| rerank | `BAAI/bge-reranker-base` | `7998` | `/rerank/` | 检索结果重排 |
+
+公网只暴露 Nginx 网关端口，embedding 和 rerank 只监听容器内的 `127.0.0.1`，不会直接暴露到公网。
 
 ## 为什么这样选
 
@@ -29,18 +32,25 @@
 
 ## 文件说明
 
-- `docker-compose.yml`：Zeabur / Docker Compose 部署入口
+- `Dockerfile`：Zeabur 优先识别的 Docker 构建入口
+- `start.sh`：同时启动 embedding、rerank 和 Nginx 网关
+- `nginx.conf.template`：Bearer Token 鉴权和反向代理配置
+- `docker-compose.yml`：本地 Docker Compose 启动入口
 - `.env.example`：可调整的模型、线程、batch 和资源参数
 - `.gitignore`：避免提交本地环境文件和缓存
 
 ## Zeabur 部署
 
-1. 将本仓库推送到 GitHub。
-2. 在 Zeabur 新建 Project。
-3. 选择从 GitHub 仓库部署。
-4. Zeabur 识别 `docker-compose.yml` 后会创建 `embedding` 和 `rerank` 两个服务。
-5. 首次启动会下载 Hugging Face 模型，耗时较长属于正常现象。
-6. 模型缓存会写入 Docker volume，不会写入宿主机全局 Python 或 Hugging Face 缓存目录。
+1. 在 Zeabur 新建 Project。
+2. 选择从 GitHub 仓库部署。
+3. 如果 Zeabur 预览识别为 `static`，点击“配置”，将构建方式改为 Dockerfile。
+4. Dockerfile 路径填写 `Dockerfile`。
+5. 服务端口填写 `8080`，或保持环境变量 `PORT=8080`。
+6. 在 Zeabur 环境变量中配置 `MODEL_API_KEY`，必须使用足够长的随机字符串。
+7. 首次启动会下载 Hugging Face 模型，耗时较长属于正常现象。
+8. 模型缓存会写入容器内的 Hugging Face 缓存目录；在支持持久卷的平台上，建议把 `/app/.cache/huggingface` 挂到持久卷。
+
+Zeabur 如果自动识别失败，优先使用 `Dockerfile` 部署，而不是 static provider。
 
 ## 本地启动
 
@@ -78,16 +88,22 @@ docker compose down -v
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `MODEL_API_KEY` | 无 | 公网访问 Bearer Token，必填 |
+| `PORT` | `8080` | Nginx 网关监听端口 |
+| `MODEL_CPUS` | `10` | Docker Compose 下的整体 CPU 限制 |
+| `MODEL_MEMORY` | `14G` | Docker Compose 下的整体内存限制 |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | embedding 模型 |
 | `EMBEDDING_BATCH_SIZE` | `16` | embedding batch 大小 |
 | `EMBEDDING_THREADS` | `6` | embedding BLAS/OMP 线程数 |
-| `EMBEDDING_CPUS` | `6` | embedding 容器 CPU 限制 |
-| `EMBEDDING_MEMORY` | `8G` | embedding 容器内存限制 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-base` | rerank 模型 |
 | `RERANK_BATCH_SIZE` | `8` | rerank batch 大小 |
 | `RERANK_THREADS` | `4` | rerank BLAS/OMP 线程数 |
-| `RERANK_CPUS` | `4` | rerank 容器 CPU 限制 |
-| `RERANK_MEMORY` | `6G` | rerank 容器内存限制 |
+
+生成 `MODEL_API_KEY` 示例：
+
+```bash
+openssl rand -hex 32
+```
 
 ## 模型切换
 
@@ -97,8 +113,6 @@ docker compose down -v
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_BATCH_SIZE=4
 RERANK_THREADS=4
-RERANK_CPUS=5
-RERANK_MEMORY=8G
 ```
 
 切换后建议观察 CPU、内存、P95 延迟和请求排队情况。
@@ -132,13 +146,63 @@ rerank 的真实压力应按 pair 数估算：
 
 ## 接口接入
 
-服务启动后：
+服务启动后只需要对外暴露一个域名：
 
-- embedding base URL：`http://<host>:7997`
-- rerank base URL：`http://<host>:7998`
+- health check：`https://<your-zeabur-domain>/health`
+- embedding base URL：`https://<your-zeabur-domain>/embedding/v1`
+- rerank base URL：`https://<your-zeabur-domain>/rerank/v1`
 
-如果在同一个 Zeabur Project 内部调用，可以优先使用 Zeabur 的内部服务域名，避免公网绕行。
+所有模型接口都需要带鉴权头：
+
+```bash
+Authorization: Bearer <MODEL_API_KEY>
+```
+
+embedding 调用示例：
+
+```bash
+curl https://<your-zeabur-domain>/embedding/v1/embeddings \
+  -H "Authorization: Bearer <MODEL_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"BAAI/bge-m3","input":"测试文本"}'
+```
+
+rerank 调用示例：
+
+```bash
+curl https://<your-zeabur-domain>/rerank/v1/rerank \
+  -H "Authorization: Bearer <MODEL_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"BAAI/bge-reranker-base","query":"什么是向量数据库？","documents":["向量数据库用于相似度检索","天气很好"]}'
+```
+
+如果调用方支持 OpenAI-compatible embedding，可以把 base URL 配成：
+
+```text
+https://<your-zeabur-domain>/embedding/v1
+```
+
+API Key 填 `MODEL_API_KEY` 的值。
+
+## 鉴权行为
+
+- `/health` 不需要鉴权，方便 Zeabur 做健康检查。
+- `/embedding/` 需要 `Authorization: Bearer <MODEL_API_KEY>`。
+- `/rerank/` 需要 `Authorization: Bearer <MODEL_API_KEY>`。
+- 其他路径返回 `404`。
+
+## Zeabur 识别为 static 的处理
+
+如果 Zeabur 构建计划预览显示 provider 是 `static`，说明它没有按预期选择 Dockerfile。处理方式：
+
+1. 不要直接点“部署”。
+2. 点击“配置”。
+3. 将 provider / runtime 改成 Dockerfile。
+4. Dockerfile 路径填写 `Dockerfile`。
+5. 端口填写 `8080`。
+6. 添加环境变量 `MODEL_API_KEY`。
+7. 再部署。
 
 ## 安全建议
 
-模型服务不建议直接裸露公网。如果必须暴露公网，建议在前面增加鉴权、限流或网关层，避免被外部请求刷满 CPU。
+当前配置已经增加 Bearer Token 鉴权，但这只解决“谁能调用”的问题，不解决高频合法请求导致的 CPU 压力。生产使用时仍建议在调用方或网关层增加限流，并定期轮换 `MODEL_API_KEY`。
