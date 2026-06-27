@@ -20,7 +20,7 @@
 ## 服务说明
 
 | 服务 | 默认模型 | 内部端口 | 公网路径 | 用途 |
-| --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | embedding | `BAAI/bge-m3` | `7997` | `/embedding/` | 文本向量化 |
 | rerank | `BAAI/bge-reranker-base` | `7998` | `/rerank/` | 检索结果重排 |
 
@@ -95,9 +95,11 @@ docker compose down -v
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | embedding 模型 |
 | `EMBEDDING_BATCH_SIZE` | `16` | embedding batch 大小 |
 | `EMBEDDING_THREADS` | `6` | embedding BLAS/OMP 线程数 |
+| `EMBEDDING_ENGINE` | `torch` | embedding 推理引擎，CPU 部署建议固定为 torch |
 | `RERANK_MODEL` | `BAAI/bge-reranker-base` | rerank 模型 |
 | `RERANK_BATCH_SIZE` | `8` | rerank batch 大小 |
 | `RERANK_THREADS` | `4` | rerank BLAS/OMP 线程数 |
+| `RERANK_ENGINE` | `torch` | rerank 推理引擎，CPU 部署建议固定为 torch |
 
 生成 `MODEL_API_KEY` 示例：
 
