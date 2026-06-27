@@ -153,6 +153,7 @@ rerank 的真实压力应按 pair 数估算：
 - health check：`https://<your-zeabur-domain>/health`
 - embedding base URL：`https://<your-zeabur-domain>/embedding/v1`
 - rerank base URL：`https://<your-zeabur-domain>/rerank/v1`
+- 兼容短路径：`/embedding/embeddings`、`/rerank/rerank`
 
 所有模型接口都需要带鉴权头：
 
