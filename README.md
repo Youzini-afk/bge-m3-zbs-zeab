@@ -1,6 +1,6 @@
 # BGE M3 Zeabur CPU 部署
 
-这是一个面向 Zeabur + Docker 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，使用 `BAAI/bge-reranker-base` 提供 rerank 服务，并通过 Nginx 暴露统一鉴权入口。
+这是一个面向 Zeabur + Docker 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，使用 `BAAI/bge-reranker-v2-m3` 提供 rerank 服务，并通过 Nginx 暴露统一鉴权入口。
 
 ## 适用资源
 
@@ -22,13 +22,13 @@
 | 服务 | 默认模型 | 内部端口 | 公网路径 | 用途 |
 | --- | --- | --- | --- | --- |
 | embedding | `BAAI/bge-m3` | `7997` | `/embedding/` | 文本向量化 |
-| rerank | `BAAI/bge-reranker-base` | `7998` | `/rerank/` | 检索结果重排 |
+| rerank | `BAAI/bge-reranker-v2-m3` | `7998` | `/rerank/` | 检索结果重排 |
 
 公网只暴露 Nginx 网关端口，embedding 和 rerank 只监听容器内的 `127.0.0.1`，不会直接暴露到公网。
 
 ## 为什么这样选
 
-`BAAI/bge-m3` 的多语言和中文效果较好，适合作为默认 embedding 模型。CPU 场景下，rerank 的计算压力通常比 embedding 更明显，所以默认选择更稳的 `BAAI/bge-reranker-base`。如果后续压测确认 CPU 余量足够，可以把 rerank 模型切到 `BAAI/bge-reranker-v2-m3`。
+`BAAI/bge-m3` 的多语言和中文效果较好，适合作为默认 embedding 模型。当前默认使用 `BAAI/bge-reranker-v2-m3` 追求更好的中文与多语言重排效果；CPU 压力较高时，可以回退到更轻的 `BAAI/bge-reranker-base`。
 
 ## 文件说明
 
@@ -96,8 +96,8 @@ docker compose down -v
 | `EMBEDDING_BATCH_SIZE` | `16` | embedding batch 大小 |
 | `EMBEDDING_THREADS` | `6` | embedding BLAS/OMP 线程数 |
 | `EMBEDDING_ENGINE` | `torch` | embedding 推理引擎，CPU 部署建议固定为 torch |
-| `RERANK_MODEL` | `BAAI/bge-reranker-base` | rerank 模型 |
-| `RERANK_BATCH_SIZE` | `8` | rerank batch 大小 |
+| `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | rerank 模型 |
+| `RERANK_BATCH_SIZE` | `4` | rerank batch 大小 |
 | `RERANK_THREADS` | `4` | rerank BLAS/OMP 线程数 |
 | `RERANK_ENGINE` | `torch` | rerank 推理引擎，CPU 部署建议固定为 torch |
 
@@ -109,15 +109,15 @@ openssl rand -hex 32
 
 ## 模型切换
 
-如果要测试效果更强但 CPU 压力更大的 rerank 模型，可以在 Zeabur 环境变量或 `.env` 中改为：
+如果 CPU 负载顶不住，可以在 Zeabur 环境变量或 `.env` 中回退到更轻的 rerank 模型：
 
 ```bash
-RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BATCH_SIZE=4
+RERANK_MODEL=BAAI/bge-reranker-base
+RERANK_BATCH_SIZE=8
 RERANK_THREADS=4
 ```
 
-切换后建议观察 CPU、内存、P95 延迟和请求排队情况。
+切换后建议观察 CPU、内存、P95 延迟、请求排队情况，以及长文 RP 记忆召回排序质量。
 
 ## 推荐 RAG 参数
 
@@ -176,7 +176,7 @@ rerank 调用示例：
 curl https://<your-zeabur-domain>/rerank/v1/rerank \
   -H "Authorization: Bearer <MODEL_API_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"model":"BAAI/bge-reranker-base","query":"什么是向量数据库？","documents":["向量数据库用于相似度检索","天气很好"]}'
+  -d '{"model":"BAAI/bge-reranker-v2-m3","query":"什么是向量数据库？","documents":["向量数据库用于相似度检索","天气很好"]}'
 ```
 
 如果调用方支持 OpenAI-compatible embedding，可以把 base URL 配成：
