@@ -1,0 +1,68 @@
+services:
+  embedding:
+    image: michaelf34/infinity:latest
+    command:
+      - v2
+      - --model-id
+      - ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - --port
+      - "7997"
+      - --host
+      - 0.0.0.0
+      - --batch-size
+      - ${EMBEDDING_BATCH_SIZE:-16}
+      - --device
+      - cpu
+    ports:
+      - "7997:7997"
+    environment:
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_CACHE: /app/.cache/huggingface
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      OMP_NUM_THREADS: ${EMBEDDING_THREADS:-6}
+      MKL_NUM_THREADS: ${EMBEDDING_THREADS:-6}
+      TOKENIZERS_PARALLELISM: "false"
+    volumes:
+      - embedding-cache:/app/.cache/huggingface
+    deploy:
+      resources:
+        limits:
+          cpus: "${EMBEDDING_CPUS:-6}"
+          memory: ${EMBEDDING_MEMORY:-8G}
+    restart: unless-stopped
+
+  rerank:
+    image: michaelf34/infinity:latest
+    command:
+      - v2
+      - --model-id
+      - ${RERANK_MODEL:-BAAI/bge-reranker-base}
+      - --port
+      - "7998"
+      - --host
+      - 0.0.0.0
+      - --batch-size
+      - ${RERANK_BATCH_SIZE:-8}
+      - --device
+      - cpu
+    ports:
+      - "7998:7998"
+    environment:
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_CACHE: /app/.cache/huggingface
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      OMP_NUM_THREADS: ${RERANK_THREADS:-4}
+      MKL_NUM_THREADS: ${RERANK_THREADS:-4}
+      TOKENIZERS_PARALLELISM: "false"
+    volumes:
+      - rerank-cache:/app/.cache/huggingface
+    deploy:
+      resources:
+        limits:
+          cpus: "${RERANK_CPUS:-4}"
+          memory: ${RERANK_MEMORY:-6G}
+    restart: unless-stopped
+
+volumes:
+  embedding-cache:
+  rerank-cache:
