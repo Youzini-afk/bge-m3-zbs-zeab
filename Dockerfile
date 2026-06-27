@@ -8,6 +8,7 @@ RUN apt-get update \
     && rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
 
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY gateway.py /app/gateway.py
 COPY start.sh /app/start.sh
 
 RUN chmod +x /app/start.sh
