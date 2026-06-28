@@ -4,6 +4,9 @@ set -euo pipefail
 : "${MODEL_API_KEY:?MODEL_API_KEY is required}"
 
 export PORT="${PORT:-8080}"
+export ENABLE_EMBEDDING="${ENABLE_EMBEDDING:-true}"
+export ENABLE_RERANK_BASE="${ENABLE_RERANK_BASE:-true}"
+export ENABLE_RERANK_V2="${ENABLE_RERANK_V2:-true}"
 export EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-m3}"
 export EMBEDDING_BATCH_SIZE="${EMBEDDING_BATCH_SIZE:-16}"
 export EMBEDDING_ENGINE="${EMBEDDING_ENGINE:-torch}"
@@ -20,6 +23,18 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 mkdir -p "$HF_HOME" /var/cache/nginx /var/run /var/log/nginx
 
+is_enabled() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if ! is_enabled "$ENABLE_EMBEDDING" && ! is_enabled "$ENABLE_RERANK_BASE" && ! is_enabled "$ENABLE_RERANK_V2"; then
+    echo "At least one model service must be enabled" >&2
+    exit 1
+fi
+
 cat > /tmp/gateway.py <<'PY'
 #!/usr/bin/env python3
 import json
@@ -31,6 +46,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 API_KEY = os.environ["MODEL_API_KEY"]
 PORT = int(os.environ.get("PORT", "8080"))
+ENABLE_EMBEDDING = os.environ.get("ENABLE_EMBEDDING", "true").lower() in {"1", "true", "yes", "on"}
+ENABLE_RERANK_BASE = os.environ.get("ENABLE_RERANK_BASE", "true").lower() in {"1", "true", "yes", "on"}
+ENABLE_RERANK_V2 = os.environ.get("ENABLE_RERANK_V2", "true").lower() in {"1", "true", "yes", "on"}
 EMBEDDING_UPSTREAM = os.environ.get("EMBEDDING_UPSTREAM", "http://127.0.0.1:7997")
 RERANK_BASE_UPSTREAM = os.environ.get("RERANK_BASE_UPSTREAM", "http://127.0.0.1:7998")
 RERANK_V2_UPSTREAM = os.environ.get("RERANK_V2_UPSTREAM", "http://127.0.0.1:7999")
@@ -79,8 +97,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         suffix = self.path[len(path):]
         if path.startswith("/embedding/v1/"):
+            if not ENABLE_EMBEDDING:
+                return None, None
             return EMBEDDING_UPSTREAM, "/" + path.removeprefix("/embedding/v1/") + suffix
         if path.startswith("/embedding/"):
+            if not ENABLE_EMBEDDING:
+                return None, None
             return EMBEDDING_UPSTREAM, "/" + path.removeprefix("/embedding/") + suffix
         if path.startswith("/rerank/v1/"):
             return self.select_rerank_upstream(body), "/" + path.removeprefix("/rerank/v1/") + suffix
@@ -97,7 +119,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except Exception:
                 model = ""
         if "base" in model:
+            if not ENABLE_RERANK_BASE:
+                return None
             return RERANK_BASE_UPSTREAM
+        if not ENABLE_RERANK_V2:
+            return None
         return RERANK_V2_UPSTREAM
 
     def proxy(self, upstream, path, body):
@@ -135,40 +161,43 @@ if __name__ == "__main__":
     server.serve_forever()
 PY
 
-OMP_NUM_THREADS="${EMBEDDING_THREADS:-6}" MKL_NUM_THREADS="${EMBEDDING_THREADS:-6}" infinity_emb v2 --model-id "$EMBEDDING_MODEL" --port 7997 --host 127.0.0.1 --batch-size "$EMBEDDING_BATCH_SIZE" --engine "$EMBEDDING_ENGINE" --device cpu &
-embedding_pid=$!
+pids=()
+names=()
 
-OMP_NUM_THREADS="${RERANK_BASE_THREADS:-3}" MKL_NUM_THREADS="${RERANK_BASE_THREADS:-3}" infinity_emb v2 --model-id "$RERANK_BASE_MODEL" --port 7998 --host 127.0.0.1 --batch-size "$RERANK_BASE_BATCH_SIZE" --engine "$RERANK_BASE_ENGINE" --device cpu &
-rerank_base_pid=$!
+if is_enabled "$ENABLE_EMBEDDING"; then
+    OMP_NUM_THREADS="${EMBEDDING_THREADS:-6}" MKL_NUM_THREADS="${EMBEDDING_THREADS:-6}" infinity_emb v2 --model-id "$EMBEDDING_MODEL" --port 7997 --host 127.0.0.1 --batch-size "$EMBEDDING_BATCH_SIZE" --engine "$EMBEDDING_ENGINE" --device cpu &
+    pids+=("$!")
+    names+=("embedding")
+fi
 
-OMP_NUM_THREADS="${RERANK_V2_THREADS:-4}" MKL_NUM_THREADS="${RERANK_V2_THREADS:-4}" infinity_emb v2 --model-id "$RERANK_V2_MODEL" --port 7999 --host 127.0.0.1 --batch-size "$RERANK_V2_BATCH_SIZE" --engine "$RERANK_V2_ENGINE" --device cpu &
-rerank_v2_pid=$!
+if is_enabled "$ENABLE_RERANK_BASE"; then
+    OMP_NUM_THREADS="${RERANK_BASE_THREADS:-3}" MKL_NUM_THREADS="${RERANK_BASE_THREADS:-3}" infinity_emb v2 --model-id "$RERANK_BASE_MODEL" --port 7998 --host 127.0.0.1 --batch-size "$RERANK_BASE_BATCH_SIZE" --engine "$RERANK_BASE_ENGINE" --device cpu &
+    pids+=("$!")
+    names+=("rerank-base")
+fi
+
+if is_enabled "$ENABLE_RERANK_V2"; then
+    OMP_NUM_THREADS="${RERANK_V2_THREADS:-4}" MKL_NUM_THREADS="${RERANK_V2_THREADS:-4}" infinity_emb v2 --model-id "$RERANK_V2_MODEL" --port 7999 --host 127.0.0.1 --batch-size "$RERANK_V2_BATCH_SIZE" --engine "$RERANK_V2_ENGINE" --device cpu &
+    pids+=("$!")
+    names+=("rerank-v2")
+fi
 
 python3 /tmp/gateway.py &
 gateway_pid=$!
+pids+=("$gateway_pid")
+names+=("gateway")
 
-trap 'kill $embedding_pid $rerank_base_pid $rerank_v2_pid $gateway_pid 2>/dev/null || true' TERM INT
+trap 'kill "${pids[@]}" 2>/dev/null || true' TERM INT
 
 while true; do
-    if ! kill -0 "$embedding_pid" 2>/dev/null; then
-        kill "$rerank_base_pid" "$rerank_v2_pid" "$gateway_pid" 2>/dev/null || true
-        wait "$embedding_pid"
-        exit $?
-    fi
-    if ! kill -0 "$rerank_base_pid" 2>/dev/null; then
-        kill "$embedding_pid" "$rerank_v2_pid" "$gateway_pid" 2>/dev/null || true
-        wait "$rerank_base_pid"
-        exit $?
-    fi
-    if ! kill -0 "$rerank_v2_pid" 2>/dev/null; then
-        kill "$embedding_pid" "$rerank_base_pid" "$gateway_pid" 2>/dev/null || true
-        wait "$rerank_v2_pid"
-        exit $?
-    fi
-    if ! kill -0 "$gateway_pid" 2>/dev/null; then
-        kill "$embedding_pid" "$rerank_base_pid" "$rerank_v2_pid" 2>/dev/null || true
-        wait "$gateway_pid"
-        exit $?
-    fi
+    for index in "${!pids[@]}"; do
+        pid="${pids[$index]}"
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "${names[$index]} exited" >&2
+            kill "${pids[@]}" 2>/dev/null || true
+            wait "$pid"
+            exit $?
+        fi
+    done
     sleep 2
 done

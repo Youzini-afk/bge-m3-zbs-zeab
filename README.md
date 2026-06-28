@@ -1,6 +1,6 @@
 # BGE M3 Zeabur CPU 部署
 
-这是一个面向 Zeabur + Docker 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，同时部署 `BAAI/bge-reranker-base` 和 `BAAI/bge-reranker-v2-m3` 两个 rerank 服务，并通过统一网关按请求体里的 `model` 字段自动分流。
+这是一个面向 Zeabur + Docker 的 CPU-only 向量模型和重排模型部署项目。默认使用 `BAAI/bge-m3` 提供 embedding 服务，同时部署 `BAAI/bge-reranker-base` 和 `BAAI/bge-reranker-v2-m3` 两个 rerank 服务，并通过统一网关按请求体里的 `model` 字段自动分流。也可以通过环境变量只启动其中一部分模型服务。
 
 ## 适用资源
 
@@ -35,7 +35,7 @@
 ## 文件说明
 
 - `Dockerfile`：Zeabur 优先识别的 Docker 构建入口
-- `start.sh`：同时启动 embedding、两个 rerank 和统一网关
+- `start.sh`：按环境变量启动 embedding、rerank 和统一网关
 - `gateway.py`：Bearer Token 鉴权、路径兼容和按 `model` 字段分流 rerank 请求
 - `nginx.conf.template`：旧版 Nginx 网关配置，当前保留作兼容参考
 - `docker-compose.yml`：本地 Docker Compose 启动入口
@@ -93,6 +93,9 @@ docker compose down -v
 | --- | --- | --- |
 | `MODEL_API_KEY` | 无 | 公网访问 Bearer Token，必填 |
 | `PORT` | `8080` | 统一网关监听端口 |
+| `ENABLE_EMBEDDING` | `true` | 是否启动 embedding 服务 |
+| `ENABLE_RERANK_BASE` | `true` | 是否启动 rerank-base 服务 |
+| `ENABLE_RERANK_V2` | `true` | 是否启动 rerank-v2 服务 |
 | `MODEL_CPUS` | `10` | Docker Compose 下的整体 CPU 限制 |
 | `MODEL_MEMORY` | `14G` | Docker Compose 下的整体内存限制 |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | embedding 模型 |
@@ -113,6 +116,16 @@ docker compose down -v
 ```bash
 openssl rand -hex 32
 ```
+
+只启动 embedding 时，Zeabur 环境变量可以这样配置：
+
+```text
+ENABLE_EMBEDDING=true
+ENABLE_RERANK_BASE=false
+ENABLE_RERANK_V2=false
+```
+
+此时 `/embedding/` 和 `/embedding/v1/` 可用，`/rerank/` 会返回 `404`，不会下载或加载 rerank 模型。
 
 ## Rerank 分流
 
